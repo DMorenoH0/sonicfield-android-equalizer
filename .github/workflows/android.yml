@@ -20,17 +20,26 @@ jobs:
         with:
           gradle-version: "8.11.1"
       - name: Test and build
-        run: gradle :app:testDebugUnitTest :app:assembleDebug
+        run: gradle :app:testSideloadDebugUnitTest :app:assembleSideloadDebug :app:assembleStoreDebug
+      - name: Verify sideload manifest has no notification listener
+        shell: bash
+        run: |
+          manifest="$(find app/build/intermediates -type f -path '*sideloadDebug*' -name AndroidManifest.xml | head -n 1)"
+          test -n "$manifest"
+          if grep -q 'BIND_NOTIFICATION_LISTENER_SERVICE\|NotificationListenerService' "$manifest"; then
+            echo "The direct-download APK unexpectedly declares a notification listener."
+            exit 1
+          fi
       - name: Prepare release APK
         if: startsWith(github.ref, 'refs/tags/')
-        run: cp app/build/outputs/apk/debug/app-debug.apk "app/build/outputs/apk/debug/SonicField-${GITHUB_REF_NAME}-debug.apk"
+        run: cp app/build/outputs/apk/sideload/debug/app-sideload-debug.apk "app/build/outputs/apk/sideload/debug/SonicField-${GITHUB_REF_NAME}.apk"
       - uses: actions/upload-artifact@v4
         with:
-          name: sonicfield-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: sonicfield-installable-apk
+          path: app/build/outputs/apk/sideload/debug/app-sideload-debug.apk
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: app/build/outputs/apk/debug/SonicField-${{ github.ref_name }}-debug.apk
+          files: app/build/outputs/apk/sideload/debug/SonicField-${{ github.ref_name }}.apk

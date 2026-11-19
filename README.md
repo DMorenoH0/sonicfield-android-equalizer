@@ -8,7 +8,7 @@ Reproductor Android local con ecualización por sesión y una interfaz de audio 
 
 - Reproduce archivos de audio locales seleccionados por el usuario.
 - Detecta en caliente salidas Bluetooth, cableadas, USB e integradas mediante `AudioDeviceCallback`; muestra el tipo y el nombre de producto que Android exponga. A2DP se muestra como salida Bluetooth porque el tipo de ruta no siempre permite distinguir de forma fiable entre auriculares y altavoz.
-- Puede mostrar título, artista, álbum, app de origen y estado de reproducción de sesiones multimedia activas. Para activarlo, el usuario debe conceder manualmente el acceso de notificaciones desde la pantalla indicada en Inicio.
+- La variante `store` puede mostrar título, artista, álbum, app de origen y estado de sesiones multimedia activas tras conceder el acceso especial de Android. El APK descargable de GitHub usa la variante `sideload`, que no declara ese servicio sensible y por ello evita el bloqueo automático de Play Protect en instalaciones directas; en ella la tarjeta muestra la reproducción propia de SonicField.
 - Incluye diez curvas de ecualización de preferencia y controles de ganancia con preatenuación calculada para compensar el mayor realce.
 - Usa `Equalizer`, `BassBoost`, `Virtualizer` y, en Android compatible, `DynamicsProcessing` en la sesión propia. Cada efecto se consulta/activa según el soporte reportado por la implementación del dispositivo.
 - Ofrece una actividad de escucha subjetiva con tonos de bajo nivel para ajustar la curva personal. No es una prueba clínica ni diagnostica pérdida auditiva.
@@ -18,7 +18,7 @@ Reproductor Android local con ecualización por sesión y una interfaz de audio 
 
 Esta aplicación **no ecualiza el audio de Spotify, YouTube, juegos ni otras aplicaciones**. Los efectos insertables de Android se conectan a una sesión que controla esta app. La captura de audio de otras aplicaciones exige consentimiento mediante `MediaProjection` y que la aplicación de origen permita la captura; no equivale a un efecto global del sistema.
 
-La detección de canción consulta metadatos de `MediaSession` de las apps que publican sesiones multimedia. Requiere el acceso especial a notificaciones que el usuario activa en Android. No usa el micrófono ni reconoce canciones por su huella sonora; si una app no publica título/estado, no habrá datos que mostrar. Este acceso habilita técnicamente la lectura de notificaciones para el servicio del sistema, aunque SonicField solo consulta sesiones multimedia.
+La detección de canciones entre aplicaciones consulta metadatos de `MediaSession` mediante un servicio de acceso a notificaciones. No usa el micrófono ni reconoce canciones por su huella sonora; si una app no publica título/estado, no habrá datos que mostrar. [Google documenta que Play Protect bloquea ciertas instalaciones desde navegador/descarga directa cuando declaran ese acceso sensible](https://developers.google.com/android/play-protect/warning-dev-guidance?hl=es-419). Por eso el APK de GitHub omite el servicio; la función queda solo en la variante `store`, que debe distribuirse por un canal compatible con sus requisitos de revisión y políticas.
 
 Android y los fabricantes pueden limitar el número de bandas, las frecuencias, la disponibilidad y el comportamiento de los efectos. La API nativa no ofrece de forma uniforme Q configurable ni una etapa de preamplificación independiente. La app muestra diez controles de usuario que se asignan a las bandas nativas disponibles; algunos pueden compartir banda. El limitador dinámico, donde se admite, limita muestras y no garantiza protección true-peak.
 
@@ -39,10 +39,11 @@ vivo documenta DeepField como una experiencia de efectos y personalización depe
 
 - Android Studio, JDK 17 y Android SDK Platform 35.
 - Gradle 8.11.1; `minSdk 26`, `targetSdk 35`.
-- Ejecutar `gradle :app:testDebugUnitTest :app:assembleDebug`.
-- APK de depuración: `app/build/outputs/apk/debug/app-debug.apk`.
+- Ejecutar `gradle :app:testSideloadDebugUnitTest :app:assembleSideloadDebug :app:assembleStoreDebug`.
+- APK de instalación directa: `app/build/outputs/apk/sideload/debug/app-sideload-debug.apk`.
+- La variante `store` se compila con `gradle :app:assembleStoreDebug` y mantiene la lectura opcional de sesiones multimedia.
 
-GitHub Actions ejecuta pruebas unitarias, compila y publica el APK de depuración como artefacto. El APK debug está firmado con la clave de depuración de Android; sirve para instalar y probar, pero no es una firma estable para actualizaciones de producción. No subir claves privadas al repositorio.
+GitHub Actions ejecuta pruebas unitarias, compila la variante descargable y publica el APK corregido en GitHub Releases. Es una compilación de depuración firmada con la clave de depuración de Android; las actualizaciones instaladas manualmente deben conservar esa misma firma. No subir claves privadas al repositorio.
 
 ## Licencia
 
