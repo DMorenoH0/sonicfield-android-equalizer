@@ -1,0 +1,17 @@
+.gradle/
+.idea/
+.kotlin/
+local.properties
+.tooling/
+**/build/
+build.log
+build.err
+debug-build.log
+debug-build.err
+*.iml
+*.hprof
+*.log
+local.properties
+captures/
+screenshots/private/
+.freebuff/
