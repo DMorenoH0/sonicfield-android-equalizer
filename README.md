@@ -1,5 +1,7 @@
 # SonicField
 
+![Logo de SonicField](docs/sonicfield-logo.svg)
+
 Reproductor Android local con ecualización por sesión y una interfaz de audio oscura. El procesamiento usa efectos públicos de Android aplicados al audio reproducido por SonicField.
 
 ## Funciones disponibles

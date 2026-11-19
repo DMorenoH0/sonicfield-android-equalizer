@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-labelledby="title">
+  <title id="title">SonicField audio logo</title>
+  <rect width="108" height="108" rx="25" fill="#0b1016"/>
+  <g fill="none" stroke="#6fe7c4" stroke-linecap="round">
+    <path d="M20 43c-7 7-7 15 0 22M88 43c7 7 7 15 0 22" stroke-width="5"/>
+    <path d="M32 49v10M43 39v30M54 30v48M65 39v30M76 49v10" stroke-width="7"/>
+  </g>
+</svg>
