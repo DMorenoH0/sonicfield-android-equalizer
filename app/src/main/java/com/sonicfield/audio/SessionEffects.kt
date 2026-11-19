@@ -1,76 +1,51 @@
 package com.sonicfield.audio
 
-import android.media.audiofx.BassBoost
-import android.media.audiofx.DynamicsProcessing
 import android.media.audiofx.Virtualizer
-import android.os.Build
-import androidx.annotation.RequiresApi
 
-/** All effects are attached only to SonicField's owned playback session. */
+/** Only the optional spatial effect is delegated to Android; EQ, bass and peak safety are processed in PCM by SonicField. */
 class SessionEffects {
-    private var bassBoost: BassBoost? = null
     private var virtualizer: Virtualizer? = null
-    private var dynamicsProcessing: DynamicsProcessing? = null
+    private var virtualizerSessionId = 0
+    private var spatialEnabled = false
 
     @Suppress("DEPRECATION")
-    fun attach(sessionId: Int, bass: Boolean, spatial: Boolean, limiter: Boolean, strength: Int): String {
-        release()
-        val unavailable = mutableListOf<String>()
-        val safeStrength = strength.coerceIn(0, 1000).toShort()
-        if (bass) try {
-            BassBoost(0, sessionId).also { effect ->
-                if (effect.strengthSupported) {
-                    effect.setStrength(safeStrength)
-                    effect.enabled = true
-                    bassBoost = effect
-                } else { effect.release(); unavailable += "graves" }
-            }
-        } catch (_: Exception) { unavailable += "graves" }
-        if (spatial) try {
-            Virtualizer(0, sessionId).also { effect ->
-                if (effect.strengthSupported) {
-                    effect.setStrength(safeStrength)
-                    effect.enabled = true
-                    virtualizer = effect
-                } else { effect.release(); unavailable += "espacio" }
-            }
-        } catch (_: Exception) { unavailable += "espacio" }
-        if (limiter) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) try {
-                dynamicsProcessing = createLimiter(sessionId)
-            } catch (_: Exception) { unavailable += "limitador" }
-            else unavailable += "limitador (Android 9+)"
+    fun attach(sessionId: Int, spatial: Boolean, strength: Int): String {
+        if (!spatial) {
+            releaseSpatial()
+            return "DSP propio activo en la sesión: ecualizador, megabajos y limitador"
         }
-        val requested = listOf(bass, spatial, limiter).any { it }
-        return when {
-            !requested -> "Sin efectos adicionales activados"
-            unavailable.isEmpty() -> "Efectos compatibles activos en esta sesión"
-            else -> "No compatibles en este dispositivo: ${unavailable.distinct().joinToString()}"
+        if (spatialEnabled && virtualizerSessionId == sessionId && virtualizer != null) {
+            virtualizer?.let { effect ->
+                if (effect.strengthSupported && effect.hasControl()) effect.setStrength(strength.coerceIn(0, 1000).toShort())
+            }
+            return "DSP propio activo; espacialización Android activa"
+        }
+        releaseSpatial()
+        if (sessionId <= 0) return "DSP propio activo; falta una sesión de salida válida para el efecto espacial"
+        return try {
+            val effect = Virtualizer(0, sessionId)
+            if (!effect.strengthSupported || !effect.hasControl()) {
+                effect.release()
+                "DSP propio activo; espacialización no controlable en este dispositivo"
+            } else {
+                effect.setStrength(strength.coerceIn(0, 1000).toShort())
+                effect.enabled = true
+                virtualizer = effect
+                virtualizerSessionId = sessionId
+                spatialEnabled = true
+                "DSP propio activo; espacialización Android activa"
+            }
+        } catch (error: Exception) {
+            "DSP propio activo; espacialización no disponible: ${error.javaClass.simpleName}"
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.P)
-    private fun createLimiter(sessionId: Int): DynamicsProcessing {
-        val limiter = DynamicsProcessing.Limiter(
-            true, true, 0, 5f, 100f, 10f, -2f, 0f,
-        )
-        val config = DynamicsProcessing.Config.Builder(
-            DynamicsProcessing.VARIANT_FAVOR_TIME_RESOLUTION,
-            2,
-            false, 0,
-            false, 0,
-            false, 0,
-            true,
-        ).apply { setLimiterAllChannelsTo(limiter) }.build()
-        return DynamicsProcessing(0, sessionId, config).apply { enabled = true }
-    }
-
-    fun release() {
-        try { bassBoost?.release() } catch (_: Exception) { }
+    private fun releaseSpatial() {
         try { virtualizer?.release() } catch (_: Exception) { }
-        try { dynamicsProcessing?.release() } catch (_: Exception) { }
-        bassBoost = null
         virtualizer = null
-        dynamicsProcessing = null
+        virtualizerSessionId = 0
+        spatialEnabled = false
     }
+
+    fun release() = releaseSpatial()
 }

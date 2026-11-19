@@ -4,9 +4,6 @@ import android.content.Context
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.media.AudioRouting
-import android.media.MediaPlayer
-import android.media.audiofx.Equalizer
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -33,8 +30,8 @@ class MainActivity : ComponentActivity() {
     private val output = mutableStateOf("Altavoces del teléfono")
     private val effectStatus = mutableStateOf("Reproduce audio para comprobar compatibilidad")
     private val audioManager by lazy { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
-    private var player: MediaPlayer? = null
-    private var equalizer: Equalizer? = null
+    private var player: PcmAudioPlayer? = null
+    private val dsp = PcmDsp()
     private val sessionEffects = SessionEffects()
     private val listeningTest = ListeningTestPlayer()
     private var processingEnabled = true
@@ -49,10 +46,6 @@ class MainActivity : ComponentActivity() {
         override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) = refreshOutput()
         override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) = refreshOutput()
     }
-    private val routeListener = AudioRouting.OnRoutingChangedListener { route ->
-        route.routedDevice?.let { output.value = describe(it) } ?: refreshOutput()
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         refreshOutput()
@@ -102,71 +95,64 @@ class MainActivity : ComponentActivity() {
 
     private fun play(uri: Uri) {
         releasePlayer()
-        try {
-            val mediaPlayer = MediaPlayer()
-            player = mediaPlayer
-            mediaPlayer.addOnRoutingChangedListener(routeListener, null)
-            mediaPlayer.setDataSource(this, uri)
-            mediaPlayer.setOnPreparedListener { prepared ->
-                try { equalizer = Equalizer(0, prepared.audioSessionId).apply { enabled = processingEnabled } }
-                catch (_: Exception) { equalizer = null }
-                applyBands(activeBands, processingEnabled)
-                effectStatus.value = sessionEffects.attach(prepared.audioSessionId, bassWanted && processingEnabled, spatialWanted && processingEnabled, limiterWanted && processingEnabled, effectStrength)
-                prepared.routedDevice?.let { output.value = describe(it) }
-                prepared.start()
-            }
-            mediaPlayer.setOnErrorListener { _, _, _ -> effectStatus.value = "No se pudo reproducir este archivo"; true }
-            mediaPlayer.prepareAsync()
-        } catch (_: Exception) {
-            effectStatus.value = "No se pudo abrir este archivo de audio"
-            releasePlayer()
-        }
+        effectStatus.value = "Decodificando y procesando audio PCM…"
+        player = PcmAudioPlayer(
+            context = this,
+            uri = uri,
+            dsp = dsp,
+            onSessionReady = { sessionId -> runOnUiThread {
+                if (player?.audioSessionId == sessionId) {
+                    effectStatus.value = if (processingEnabled) sessionEffects.attach(sessionId, spatialWanted, effectStrength)
+                        else "Procesamiento DSP desactivado"
+                }
+            } },
+            onRouteChanged = { route -> runOnUiThread {
+                if (route != null) output.value = describe(route) else refreshOutput()
+            } },
+            onError = { message -> runOnUiThread { effectStatus.value = "Error de audio: $message" } },
+        ).also { it.start() }
     }
 
     private fun applyBands(values: List<Float>, enabled: Boolean) {
         processingEnabled = enabled
         activeBands = values.map { it.coerceIn(-6f, 4f) }
-        applyPlaybackGain()
-        val effect = equalizer ?: return
-        try {
-            effect.enabled = enabled
-            val range = effect.bandLevelRange
-            val used = mutableSetOf<Short>()
-            activeBands.forEachIndexed { index, gainDb ->
-                val band = effect.getBand(PresetCatalog.centerFrequenciesHz[index] * 1000)
-                if (used.add(band)) {
-                    val millibels = (gainDb * 100).toInt().coerceIn(range[0].toInt(), range[1].toInt()).toShort()
-                    effect.setBandLevel(band, millibels)
-                }
-            }
-        } catch (_: Exception) { effectStatus.value = "El ecualizador nativo no está disponible para esta sesión" }
+        updateDsp()
     }
 
-    private fun applyPreamp(value: Float) { requestedPreampDb = value.coerceIn(-12f, 0f); applyPlaybackGain() }
-    private fun applyPlaybackGain() {
-        val db = PresetCatalog.safePreampDb(activeBands, requestedPreampDb)
-        val volume = Math.pow(10.0, db / 20.0).toFloat()
-        player?.setVolume(volume, volume)
+    private fun applyPreamp(value: Float) {
+        requestedPreampDb = value.coerceIn(-12f, 0f)
+        updateDsp()
     }
+
+    private fun updateDsp() = dsp.update(activeBands, requestedPreampDb, processingEnabled, bassWanted, limiterWanted)
 
     private fun playTestTone(frequencyHz: Int) = listeningTest.play(frequencyHz, activeBands, processingEnabled, requestedPreampDb)
 
     private fun configureEffects(bass: Boolean, spatial: Boolean, limiter: Boolean, strength: Int) {
         bassWanted = bass
         spatialWanted = spatial
+        limiterWanted = limiter
         effectStrength = strength.coerceIn(0, 1000)
-        if (player == null) {
-            effectStatus.value = "Abre y reproduce audio para probar compatibilidad"
+        updateDsp()
+        if (!processingEnabled) {
+            sessionEffects.release()
+            effectStatus.value = "Procesamiento DSP desactivado"
             return
         }
-        player?.let { effectStatus.value = sessionEffects.attach(it.audioSessionId, bassWanted && processingEnabled, spatialWanted && processingEnabled, limiterWanted && processingEnabled, effectStrength) }
+        val sessionId = player?.audioSessionId ?: 0
+        if (spatial && processingEnabled) {
+            effectStatus.value = if (sessionId > 0) sessionEffects.attach(sessionId, true, effectStrength)
+                else "Procesamiento DSP listo; el efecto espacial requiere reproducir audio en SonicField"
+            return
+        }
+        sessionEffects.release()
+        effectStatus.value = if (sessionId > 0) "DSP propio activo en la sesión: EQ, megabajos${if (limiterWanted) " y limitador" else ""}"
+            else "EQ, megabajos y limitador DSP listos; abre audio en SonicField para escucharlos"
     }
 
     private fun releasePlayer() {
         sessionEffects.release()
-        try { equalizer?.release() } catch (_: Exception) { }
-        equalizer = null
-        try { player?.removeOnRoutingChangedListener(routeListener); player?.release() } catch (_: Exception) { }
+        try { player?.stop() } catch (_: Exception) { }
         player = null
         refreshOutput()
     }
@@ -179,9 +165,9 @@ private val presets=PresetCatalog.names
  LaunchedEffect(enabled){apply(bands.toList(),enabled);configureEffects(mega,space,limiter,effectStrength)};LaunchedEffect(preampDb){prefs.edit().putFloat("preamp_db",preampDb).apply();setPreamp(preampDb)};LaunchedEffect(mega,space,limiter,effectStrength){prefs.edit().putBoolean("bass",mega).putBoolean("space",space).putBoolean("limiter",limiter).putInt("effect_strength",effectStrength).apply();configureEffects(mega,space,limiter,effectStrength)};LaunchedEffect(Unit){val saved=prefs.getString("bands",null);if(saved==null)setPreset(selected,bands) else try{val a=org.json.JSONArray(saved);for(i in 0 until minOf(10,a.length()))bands[i]=a.getDouble(i).toFloat()}catch(_:Exception){setPreset(selected,bands)};apply(bands,enabled)}
  Scaffold(containerColor=Bg,bottomBar={NavigationBar(containerColor=Card){listOf("Inicio","EQ","Efectos","Perfil").forEachIndexed{i,s->NavigationBarItem(selected=page==i,onClick={page=i},icon={Text(when(i){0->"⌂";1->"≋";2->"◉";else->"◖"},color=if(page==i) Mint else Color.Gray)},label={Text(s)})}}}){pad->Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp)){
  Row(Modifier.fillMaxWidth().padding(top=24.dp,bottom=22.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("SONICFIELD",color=Mint,style=MaterialTheme.typography.labelLarge,fontWeight=FontWeight.Bold);Text(listOf("Tu sonido","Ecualizador","Espacio y claridad","Ajuste personal")[page],color=Color.White,style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Bold)};Image(painterResource(R.drawable.sonicfield_mark),contentDescription="Logo de SonicField",modifier=Modifier.size(44.dp))}
- when(page){0->{Panel{Text("SALIDA DETECTADA",color=Mint,style=MaterialTheme.typography.labelMedium);Text(device,color=Color.White,style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold);Text("Android informa los dispositivos conectados y, durante la reproducción, la ruta que usa esta sesión.",color=Color.LightGray,style=MaterialTheme.typography.bodySmall)};NowPlayingCard(playback,onEnableMusicDetection);Panel{Text("REPRODUCTOR DE ESTA APP",color=Mint,style=MaterialTheme.typography.labelMedium);Text(playback,color=Color.White);Button(onClick={picker.launch(arrayOf("audio/*"))}){Text("↥  Abrir audio")};Text("La ecualización solo afecta audio abierto aquí.",color=Color.Gray,style=MaterialTheme.typography.bodySmall)};Panel{Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("Procesamiento",color=Color.White,style=MaterialTheme.typography.titleLarge);Text("Efecto Equalizer del dispositivo",color=Color.Gray)};Switch(enabled,{enabled=it;prefs.edit().putBoolean("enabled",it).apply();apply(bands,it)})}};Panel{Text("PRESET ACTIVO",color=Mint,style=MaterialTheme.typography.labelMedium);var expanded by remember{mutableStateOf(false)};Box{TextButton(onClick={expanded=true}){Text(selected,color=Color.White,style=MaterialTheme.typography.titleLarge)};DropdownMenu(expanded,{expanded=false}){presets.forEach{DropdownMenuItem(text={Text(it)},onClick={selected=it;expanded=false;setPreset(it,bands);apply(bands,enabled);prefs.edit().putString("preset",it).putString("bands",org.json.JSONArray(bands.toList()).toString()).apply()})}}}};Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){Button(onClick={page=1},modifier=Modifier.weight(1f)){Text("≋",color=Color.White);Text("  Ecualizador")};OutlinedButton(onClick={page=2},modifier=Modifier.weight(1f)){Text("◉",color=Mint);Text("  Efectos")}}}
- 1->{Panel{Text("10 CONTROLES · −6 a +4 dB",color=Mint,style=MaterialTheme.typography.labelMedium);Text("El efecto nativo puede exponer menos bandas; controles cercanos se asignan a bandas disponibles.",color=Color.Gray,style=MaterialTheme.typography.bodySmall)};Panel{Text("Preamplificación segura · ${"%.1f".format(preampDb)} dB",color=Color.White);Slider(value=preampDb,valueRange=-12f..0f,onValueChange={preampDb=it;setPreamp(it)},colors=SliderDefaults.colors(thumbColor=Mint,activeTrackColor=Mint));Text("La salida se atenúa automáticamente según el mayor realce del EQ.",color=Color.Gray,style=MaterialTheme.typography.bodySmall)};freqs.forEachIndexed{i,f->Row(verticalAlignment=Alignment.CenterVertically){Text(f,color=Color.LightGray,modifier=Modifier.width(42.dp));Slider(value=bands[i],valueRange=-6f..4f,onValueChange={bands[i]=it;apply(bands,enabled)},modifier=Modifier.weight(1f),colors=SliderDefaults.colors(thumbColor=Mint,activeTrackColor=Mint));Text("${bands[i].toInt()} dB",color=Color.White,modifier=Modifier.width(44.dp))}};OutlinedButton(onClick={for(i in bands.indices)bands[i]=0f;apply(bands,enabled)}){Text("Restablecer")};OutlinedButton(onClick={prefs.edit().putString("bands",org.json.JSONArray(bands.toList()).toString()).apply()}){Text("Guardar EQ")};Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){OutlinedButton(onClick={exportPreset.launch("sonicfield-preset.json")}){Text("Exportar")};OutlinedButton(onClick={importPreset.launch(arrayOf("application/json"))}){Text("Importar")}}}
- 2->{Effect("Espacio 360","Virtualizador estéreo de Android ligado a la sesión de este reproductor.",space,{space=it;configureEffects(mega,space,limiter,effectStrength)},"Compatible cuando el dispositivo lo admita");Effect("Protección de picos","Limitador de muestra del procesador dinámico de Android (API 28+), si el dispositivo lo admite.",limiter,{limiter=it;configureEffects(mega,space,limiter,effectStrength)},"No es un limitador de pico verdadero");Effect("Mega bajos","Refuerzo mediante BassBoost nativo en la sesión del reproductor.",mega,{mega=it;configureEffects(mega,space,limiter,effectStrength)},"Compatibilidad según fabricante");Effect("Voz clara","Curva de ecualización centrada en presencia vocal; no separa voces de la mezcla.",selected=="Voz clara",{voice->if(voice){selected="Voz clara";setPreset("Voz clara",bands);apply(bands,enabled);prefs.edit().putString("preset",selected).putString("bands",org.json.JSONArray(bands.toList()).toString()).apply()}else if(selected=="Voz clara"){selected="Plano";setPreset("Plano",bands);apply(bands,enabled);prefs.edit().putString("preset",selected).putString("bands",org.json.JSONArray(bands.toList()).toString()).apply()}},"Curva EQ");Text("Los efectos usan la sesión del reproductor de SonicField; no procesan otras apps.",color=Color.Gray,style=MaterialTheme.typography.bodySmall)}
+ when(page){0->{Panel{Text("SALIDA DETECTADA",color=Mint,style=MaterialTheme.typography.labelMedium);Text(device,color=Color.White,style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold);Text("Android informa los dispositivos conectados y, durante la reproducción, la ruta que usa esta sesión.",color=Color.LightGray,style=MaterialTheme.typography.bodySmall)};NowPlayingCard(playback,onEnableMusicDetection);Panel{Text("REPRODUCTOR DE ESTA APP",color=Mint,style=MaterialTheme.typography.labelMedium);Text(playback,color=Color.White);Button(onClick={picker.launch(arrayOf("audio/*"))}){Text("↥  Abrir audio")};Text("La ecualización solo afecta audio abierto aquí.",color=Color.Gray,style=MaterialTheme.typography.bodySmall)};Panel{Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("Procesamiento",color=Color.White,style=MaterialTheme.typography.titleLarge);Text("DSP PCM local",color=Color.Gray)};Switch(enabled,{enabled=it;prefs.edit().putBoolean("enabled",it).apply();apply(bands,it)})};Text(effectStatus,color=if(effectStatus.startsWith("Error")) Color(0xFFFF8F8F) else Mint,style=MaterialTheme.typography.bodySmall)};Panel{Text("PRESET ACTIVO",color=Mint,style=MaterialTheme.typography.labelMedium);var expanded by remember{mutableStateOf(false)};Box{TextButton(onClick={expanded=true}){Text(selected,color=Color.White,style=MaterialTheme.typography.titleLarge)};DropdownMenu(expanded,{expanded=false}){presets.forEach{DropdownMenuItem(text={Text(it)},onClick={selected=it;expanded=false;setPreset(it,bands);apply(bands,enabled);prefs.edit().putString("preset",it).putString("bands",org.json.JSONArray(bands.toList()).toString()).apply()})}}}};Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){Button(onClick={page=1},modifier=Modifier.weight(1f)){Text("≋",color=Color.White);Text("  Ecualizador")};OutlinedButton(onClick={page=2},modifier=Modifier.weight(1f)){Text("◉",color=Mint);Text("  Efectos")}}}
+ 1->{Panel{Text("10 FILTROS PEAKING · −6 a +4 dB",color=Mint,style=MaterialTheme.typography.labelMedium);Text("Cada banda se procesa en PCM a su frecuencia central antes de la salida de SonicField.",color=Color.Gray,style=MaterialTheme.typography.bodySmall)};Panel{Text("Preamplificación · ${"%.1f".format(preampDb)} dB",color=Color.White);Slider(value=preampDb,valueRange=-12f..0f,onValueChange={preampDb=it;setPreamp(it)},colors=SliderDefaults.colors(thumbColor=Mint,activeTrackColor=Mint));Text("El DSP calcula margen para la curva combinada y el limitador protege los picos.",color=Color.Gray,style=MaterialTheme.typography.bodySmall)};freqs.forEachIndexed{i,f->Row(verticalAlignment=Alignment.CenterVertically){Text(f,color=Color.LightGray,modifier=Modifier.width(42.dp));Slider(value=bands[i],valueRange=-6f..4f,onValueChange={bands[i]=it;apply(bands,enabled)},modifier=Modifier.weight(1f),colors=SliderDefaults.colors(thumbColor=Mint,activeTrackColor=Mint));Text("${bands[i].toInt()} dB",color=Color.White,modifier=Modifier.width(44.dp))}};OutlinedButton(onClick={for(i in bands.indices)bands[i]=0f;apply(bands,enabled);selected="Plano";prefs.edit().putString("preset",selected).putString("bands",org.json.JSONArray(bands.toList()).toString()).apply()}){Text("Restablecer")};OutlinedButton(onClick={prefs.edit().putString("bands",org.json.JSONArray(bands.toList()).toString()).putString("preset",selected).apply()}){Text("Guardar EQ")};Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){OutlinedButton(onClick={exportPreset.launch("sonicfield-preset.json")}){Text("Exportar")};OutlinedButton(onClick={importPreset.launch(arrayOf("application/json"))}){Text("Importar")}}}
+ 2->{Effect("Espacio 360","Virtualizador estéreo opcional de Android en la sesión de SonicField.",space,{space=it;configureEffects(mega,space,limiter,effectStrength)},"Disponibilidad informada por el dispositivo");Effect("Protección de picos","Limitador DSP propio a −1 dBFS sobre el PCM procesado.",limiter,{limiter=it;configureEffects(mega,space,limiter,effectStrength)},"Aplicado antes de enviar audio a Android");Effect("Mega bajos","Low-shelf de +6 dB a 88 Hz, sumado al EQ y compensado contra clipping.",mega,{mega=it;configureEffects(mega,space,limiter,effectStrength)},"DSP PCM; se actualiza durante la reproducción");Effect("Voz clara","Curva de ecualización centrada en presencia vocal; no separa voces de la mezcla.",selected=="Voz clara",{voice->if(voice){selected="Voz clara";setPreset("Voz clara",bands);apply(bands,enabled);prefs.edit().putString("preset",selected).putString("bands",org.json.JSONArray(bands.toList()).toString()).apply()}else if(selected=="Voz clara"){selected="Plano";setPreset("Plano",bands);apply(bands,enabled);prefs.edit().putString("preset",selected).putString("bands",org.json.JSONArray(bands.toList()).toString()).apply()}},"Curva EQ");Text("EQ, megabajos y limitador procesan el PCM de SonicField. Android no permite a esta app ecualizar globalmente Spotify, YouTube o juegos.",color=Color.Gray,style=MaterialTheme.typography.bodySmall)}
  else->{HearingPanel(bands.toList(),enabled,playTone,{index,gain->bands[index]=gain;apply(bands,enabled)},{prefs.edit().putString("bands",org.json.JSONArray(bands.toList()).toString()).putString("preset","Personalizado").apply();selected="Personalizado"})}
  };Spacer(Modifier.height(30.dp))
  }} }

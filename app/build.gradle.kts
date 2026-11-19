@@ -1,6 +1,6 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.plugin.compose") }
 android { namespace = "com.sonicfield.audio"; compileSdk = 35
-    defaultConfig { applicationId = "com.sonicfield.audio"; minSdk = 26; targetSdk = 35; versionCode = 5; versionName = "0.1.5" }
+    defaultConfig { applicationId = "com.sonicfield.audio"; minSdk = 26; targetSdk = 35; versionCode = 6; versionName = "0.1.6" }
     flavorDimensions += "distribution"
     productFlavors {
         create("sideload") { dimension = "distribution" }
