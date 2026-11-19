@@ -11,6 +11,9 @@ debug-build.err
 *.iml
 *.hprof
 *.log
+*.err
+build*.log
+build*.err
 local.properties
 captures/
 screenshots/private/
